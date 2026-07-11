@@ -32,7 +32,9 @@ Quick smoke test: `cargo run -- txt tests/fixtures/input.jpg --width 80`
 
 - Charset ramps run dark → light; `engine::convert` maps luma 0 → index 0.
 - `--json` output shape (`cols`, `rows`, `charset`, `lines`, `colors`) is a public contract —
-  downstream agents parse it. Add fields, never rename or remove.
+  downstream agents parse it. Add fields, never rename or remove. The `charset` field is the
+  ramp *as applied* (`render::effective_ramp`): index 0 is always the darkest-cell character,
+  even when `--invert` was used.
 - The MCP tool name `image_to_ascii` and its input schema are a public contract.
 - The binary must stay standalone: no runtime file dependencies (fonts are `include_bytes!`).
 - Zero clippy warnings; every public function has a doc comment.

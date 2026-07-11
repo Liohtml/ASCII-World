@@ -74,8 +74,9 @@ ascii-world img photo.jpg -o art.png --color
 curl -s https://example.com/cat.png | ascii-world txt - --width 80
 ```
 
-Run `ascii-world --help` for everything: charsets (`simple`, `complex`, `blocks`,
-8 language alphabets, or `custom:<your chars>`), backgrounds, font size, inversion.
+Run `ascii-world charsets` to see every built-in character set (`simple`, `complex`, `blocks`,
+8 language alphabets) — or bring your own with `--charset custom:"<chars dark→light>"`.
+`ascii-world txt --help` / `img --help` list all flags: width, background, font size, inversion.
 
 ## 🤖 Use it from your agent (MCP)
 
@@ -140,6 +141,7 @@ println!("{}", render::to_text(&grid));
 - [ ] Braille charset (`⣿`) for 2×4 sub-cell resolution
 - [ ] CJK charset presets (needs a bundled CJK-capable font)
 - [ ] Parallel cell sampling (rayon) for gigapixel inputs
+- [ ] Auto-crop of empty margins in PNG output (legacy parity)
 - [ ] WASM build — ASCII art in the browser
 
 Want one of these? They're tagged as [issues](https://github.com/Liohtml/ASCII-World/issues) —

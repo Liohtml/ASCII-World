@@ -70,6 +70,11 @@ enum Command {
         /// Font size in pixels (controls output resolution)
         #[arg(long, default_value_t = 16.0)]
         font_px: f32,
+        /// Invert brightness mapping. Default: automatic — inverted on black
+        /// backgrounds so glyph density tracks contrast against the canvas.
+        /// Pass --invert true/false to force either mapping.
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        invert: Option<bool>,
     },
     /// List built-in character sets
     Charsets,
@@ -128,8 +133,14 @@ fn main() -> Result<()> {
                     aspect: 2.0,
                 },
             )?;
+            if grid.cols < width {
+                eprintln!(
+                    "note: --width {width} clamped to image width ({} columns)",
+                    grid.cols
+                );
+            }
             let rendered = if json {
-                render::to_json(&grid, &ramp, true)
+                render::to_json(&grid, &render::effective_ramp(&ramp, invert), true)
             } else if ansi {
                 render::to_ansi(&grid)
             } else {
@@ -151,12 +162,11 @@ fn main() -> Result<()> {
             color,
             bg,
             font_px,
+            invert,
         } => {
             let ramp = charset::resolve(&charset)?;
             let background: Background = bg.into();
-            // Glyph density must track contrast against the background: on a
-            // black canvas bright cells need dense glyphs, so flip the ramp.
-            let invert = background == Background::Black;
+            let invert = invert.unwrap_or(background.default_invert());
             let grid = engine::convert(
                 &load_image(&input)?,
                 &engine::Options {

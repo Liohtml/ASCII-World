@@ -71,8 +71,10 @@ pub fn convert(image: &RgbImage, opts: &Options) -> Result<AsciiGrid> {
     let rows = ((img_h as f64 / cell_h) as u32).max(1);
 
     let n = opts.charset.len();
-    let mut chars = Vec::with_capacity((cols * rows) as usize);
-    let mut colors = Vec::with_capacity((cols * rows) as usize);
+    let mut chars = Vec::with_capacity(cols as usize * rows as usize);
+    let mut colors = Vec::with_capacity(cols as usize * rows as usize);
+    let raw = image.as_raw();
+    let stride = img_w as usize * 3;
 
     for row in 0..rows {
         let y0 = (row as f64 * cell_h) as u32;
@@ -83,14 +85,15 @@ pub fn convert(image: &RgbImage, opts: &Options) -> Result<AsciiGrid> {
 
             let mut sum = [0u64; 3];
             for y in y0..y1 {
-                for x in x0..x1 {
-                    let p = image.get_pixel(x, y).0;
+                let start = y as usize * stride + x0 as usize * 3;
+                let end = y as usize * stride + x1 as usize * 3;
+                for p in raw[start..end].chunks_exact(3) {
                     sum[0] += p[0] as u64;
                     sum[1] += p[1] as u64;
                     sum[2] += p[2] as u64;
                 }
             }
-            let count = ((y1 - y0) * (x1 - x0)) as u64;
+            let count = (y1 - y0) as u64 * (x1 - x0) as u64;
             let avg = [
                 (sum[0] / count) as u8,
                 (sum[1] / count) as u8,

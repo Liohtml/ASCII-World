@@ -17,16 +17,15 @@ pub fn to_text(grid: &AsciiGrid) -> String {
 
 /// Render the grid with 24-bit ANSI foreground colors for terminals.
 pub fn to_ansi(grid: &AsciiGrid) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity((grid.cols as usize * 20 + 1) * grid.rows as usize);
     for row in 0..grid.rows {
         let mut last: Option<[u8; 3]> = None;
         for col in 0..grid.cols {
             let color = grid.color_at(row, col);
             if last != Some(color) {
-                out.push_str(&format!(
-                    "\x1b[38;2;{};{};{}m",
-                    color[0], color[1], color[2]
-                ));
+                let [r, g, b] = color;
+                let _ = write!(out, "\x1b[38;2;{r};{g};{b}m");
                 last = Some(color);
             }
             out.push(grid.char_at(row, col));
@@ -36,8 +35,23 @@ pub fn to_ansi(grid: &AsciiGrid) -> String {
     out
 }
 
+/// The ramp as it was actually applied: reversed when `invert` was set.
+///
+/// Pass the result to [`to_json`] so the serialized `charset` field keeps its
+/// contract — index 0 is the character used for the darkest cells — even for
+/// inverted conversions.
+pub fn effective_ramp(charset: &[char], invert: bool) -> Vec<char> {
+    let mut ramp = charset.to_vec();
+    if invert {
+        ramp.reverse();
+    }
+    ramp
+}
+
 /// Render the grid as machine-readable JSON.
 ///
+/// `charset` must be the ramp as applied to this grid (see
+/// [`effective_ramp`]); index 0 corresponds to the darkest cells.
 /// `include_colors` adds a `colors` field: per row, one `#rrggbb` hex string
 /// per cell. Agents that render downstream (HTML, SVG, terminals) use it to
 /// reconstruct the colored image.
@@ -128,5 +142,11 @@ mod tests {
         let no_colors: serde_json::Value =
             serde_json::from_str(&to_json(&grid, &['@', ' '], false)).unwrap();
         assert!(no_colors.get("colors").is_none());
+    }
+
+    #[test]
+    fn effective_ramp_reverses_only_when_inverted() {
+        assert_eq!(effective_ramp(&['@', '.', ' '], false), vec!['@', '.', ' ']);
+        assert_eq!(effective_ramp(&['@', '.', ' '], true), vec![' ', '.', '@']);
     }
 }

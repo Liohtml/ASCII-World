@@ -3,10 +3,12 @@
 //! A cell whose average brightness is 0 maps to the first character of the
 //! set (the densest glyph), a white cell maps to the last (usually a space).
 //! Language sets are sorted at runtime by measuring real glyph coverage in
-//! the embedded font — the same trick the original Python project used.
+//! the embedded font — the same idea as the original Python project (which
+//! additionally thinned the ramp toward evenly spaced brightness steps; we
+//! keep every glyph instead).
 
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
-use anyhow::{bail, Context, Result};
+use ab_glyph::{Font, PxScale, ScaleFont};
+use anyhow::{bail, Result};
 
 /// The 10-character set from the original ASCII-generator.
 pub const SIMPLE: &str = "@%#*+=-:. ";
@@ -16,18 +18,44 @@ pub const COMPLEX: &str =
 /// Unicode block elements — great for chunky, high-contrast output.
 pub const BLOCKS: &str = "█▓▒░ ";
 
-const ENGLISH: &str = "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz";
-const GERMAN: &str = "AaÄäBbßCcDdEeFfGgHhIiJjKkLlMmNnOoÖöPpQqRrSsTtUuÜüVvWwXxYyZz";
-const FRENCH: &str =
-    "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZzÆæŒœÇçÀàÂâÉéÈèÊêËëÎîÏïÔôÛûÙùŸÿ";
-const SPANISH: &str = "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZzÑñáéíóú¡¿";
-const ITALIAN: &str = "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZzÀÈàèéìòù";
-const PORTUGUESE: &str =
-    "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZzàÀáÁâÂãÃçÇéÉêÊíÍóÓôÔõÕúÚ";
-const POLISH: &str = "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpRrSsTtUuWwYyZzĄąĘęÓóŁłŃńŻżŚśĆćŹź";
-const RUSSIAN: &str = "АаБбВвГгДдЕеЁёЖжЗзИиЙйКкЛлМмНнОоПпРрСсТтУуФфХхЦцЧчШшЩщЪъЫыЬьЭэЮюЯя";
+/// Language alphabets, density-sorted at runtime. One row per language keeps
+/// `NAMED`, `resolve`, and the `charsets` subcommand in sync automatically.
+const LANGUAGES: &[(&str, &str)] = &[
+    (
+        "english",
+        "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz",
+    ),
+    (
+        "german",
+        "AaÄäBbßCcDdEeFfGgHhIiJjKkLlMmNnOoÖöPpQqRrSsTtUuÜüVvWwXxYyZz",
+    ),
+    (
+        "french",
+        "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZzÆæŒœÇçÀàÂâÉéÈèÊêËëÎîÏïÔôÛûÙùŸÿ",
+    ),
+    (
+        "spanish",
+        "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZzÑñáéíóú¡¿",
+    ),
+    (
+        "italian",
+        "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZzÀÈàèéìòù",
+    ),
+    (
+        "portuguese",
+        "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZzàÀáÁâÂãÃçÇéÉêÊíÍóÓôÔõÕúÚ",
+    ),
+    (
+        "polish",
+        "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpRrSsTtUuWwYyZzĄąĘęÓóŁłŃńŻżŚśĆćŹź",
+    ),
+    (
+        "russian",
+        "АаБбВвГгДдЕеЁёЖжЗзИиЙйКкЛлМмНнОоПпРрСсТтУуФфХхЦцЧчШшЩщЪъЫыЬьЭэЮюЯя",
+    ),
+];
 
-/// Names accepted by `--charset`, shown in `--help` and the MCP tool schema.
+/// Names accepted by `--charset` and the MCP tool schema.
 pub const NAMED: &[&str] = &[
     "simple",
     "complex",
@@ -58,23 +86,20 @@ pub fn resolve(name: &str) -> Result<Vec<char>> {
         "simple" => SIMPLE.chars().collect(),
         "complex" => COMPLEX.chars().collect(),
         "blocks" => BLOCKS.chars().collect(),
-        "english" => density_sort(ENGLISH)?,
-        "german" => density_sort(GERMAN)?,
-        "french" => density_sort(FRENCH)?,
-        "spanish" => density_sort(SPANISH)?,
-        "italian" => density_sort(ITALIAN)?,
-        "portuguese" => density_sort(PORTUGUESE)?,
-        "polish" => density_sort(POLISH)?,
-        "russian" => density_sort(RUSSIAN)?,
-        other => bail!("unknown charset '{other}'. Use one of {NAMED:?} or 'custom:<chars>'"),
+        other => match LANGUAGES.iter().find(|(lang, _)| *lang == other) {
+            Some((_, chars)) => density_sort(chars),
+            None => {
+                bail!("unknown charset '{other}'. Use one of {NAMED:?} or 'custom:<chars>'")
+            }
+        },
     };
     Ok(ramp)
 }
 
 /// Sort characters dark → light by measuring per-glyph pixel coverage in the
 /// embedded font, then append a space as the "white" end of the ramp.
-pub fn density_sort(chars: &str) -> Result<Vec<char>> {
-    let font = FontRef::try_from_slice(crate::FONT_BYTES).context("embedded font is invalid")?;
+pub fn density_sort(chars: &str) -> Vec<char> {
+    let font = crate::font();
     let scale = PxScale::from(32.0);
     let scaled = font.as_scaled(scale);
     let cell_area = scaled.h_advance(font.glyph_id('M')) * scaled.height();
@@ -100,7 +125,7 @@ pub fn density_sort(chars: &str) -> Result<Vec<char>> {
     weighted.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
     let mut ramp: Vec<char> = weighted.into_iter().map(|(_, c)| c).collect();
     ramp.push(' ');
-    Ok(ramp)
+    ramp
 }
 
 #[cfg(test)]
@@ -113,6 +138,14 @@ mod tests {
             let ramp = resolve(name).unwrap();
             assert!(ramp.len() >= 2, "charset {name} too short");
         }
+    }
+
+    #[test]
+    fn named_covers_every_language() {
+        for (lang, _) in LANGUAGES {
+            assert!(NAMED.contains(lang), "{lang} missing from NAMED");
+        }
+        assert_eq!(NAMED.len(), LANGUAGES.len() + 3);
     }
 
     #[test]

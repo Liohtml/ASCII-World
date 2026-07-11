@@ -1,9 +1,16 @@
 //! PNG renderer: paints an [`AsciiGrid`] with the embedded monospace font.
 
 use crate::engine::AsciiGrid;
-use ab_glyph::{point, Font, FontRef, PxScale, ScaleFont};
-use anyhow::{Context, Result};
+use ab_glyph::{point, Font, GlyphId, PxScale, ScaleFont};
+use anyhow::{bail, Result};
 use image::{Rgb, RgbImage};
+
+/// Largest accepted `font_px`; above this a single glyph is poster-sized and
+/// canvas math risks overflowing.
+pub const MAX_FONT_PX: f32 = 512.0;
+/// Cap on output pixels (w × h) so absurd width/font combinations fail fast
+/// instead of attempting a multi-gigabyte allocation.
+const MAX_CANVAS_PIXELS: u64 = 500_000_000;
 
 /// Background style for painted output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,20 +34,32 @@ impl Background {
             Background::White => [0, 0, 0],
         }
     }
+
+    /// The ramp inversion that keeps glyph density tracking contrast against
+    /// this canvas: on black, bright cells need dense glyphs. Pass this as
+    /// [`crate::engine::Options::invert`] when converting for [`paint_png`].
+    pub fn default_invert(self) -> bool {
+        matches!(self, Background::Black)
+    }
 }
 
 /// Paint the grid into an RGB image using the embedded DejaVu Sans Mono Bold.
 ///
-/// `colored` uses each cell's average source color as the glyph color;
-/// otherwise glyphs are white-on-black or black-on-white per `background`.
-/// `font_px` controls the glyph size and therefore the output resolution.
+/// `colored` uses each cell's average source color as the glyph color
+/// (value-boosted on black backgrounds, where glyph density already encodes
+/// luminance); otherwise glyphs are white-on-black or black-on-white per
+/// `background`. `font_px` controls the glyph size and therefore the output
+/// resolution. Characters the embedded font cannot draw are left blank.
 pub fn paint_png(
     grid: &AsciiGrid,
     background: Background,
     colored: bool,
     font_px: f32,
 ) -> Result<RgbImage> {
-    let font = FontRef::try_from_slice(crate::FONT_BYTES).context("embedded font is invalid")?;
+    if !(1.0..=MAX_FONT_PX).contains(&font_px) {
+        bail!("font_px must be between 1 and {MAX_FONT_PX} (got {font_px})");
+    }
+    let font = crate::font();
     let scale = PxScale::from(font_px);
     let scaled = font.as_scaled(scale);
 
@@ -48,8 +67,17 @@ pub fn paint_png(
     let cell_h = scaled.height().ceil() as u32;
     let ascent = scaled.ascent();
 
-    let out_w = cell_w * grid.cols;
-    let out_h = cell_h * grid.rows;
+    let (out_w, out_h) = (
+        cell_w as u64 * grid.cols as u64,
+        cell_h as u64 * grid.rows as u64,
+    );
+    if out_w * out_h > MAX_CANVAS_PIXELS {
+        bail!(
+            "output canvas {out_w}x{out_h} exceeds {MAX_CANVAS_PIXELS} pixels; \
+             lower --width or --font-px"
+        );
+    }
+    let (out_w, out_h) = (out_w as u32, out_h as u32);
     let mut img = RgbImage::from_pixel(out_w, out_h, background.fill());
 
     for row in 0..grid.rows {
@@ -58,21 +86,35 @@ pub fn paint_png(
             if ch == ' ' {
                 continue;
             }
-            let ink = if colored {
+            let glyph_id = font.glyph_id(ch);
+            if glyph_id == GlyphId(0) {
+                // Missing from the font: blank beats an identical tofu box
+                // in every cell, which would destroy the density ramp.
+                continue;
+            }
+            let ink = if !colored {
+                background.ink()
+            } else if background == Background::Black {
                 brighten(grid.color_at(row, col))
             } else {
-                background.ink()
+                grid.color_at(row, col)
             };
-            let glyph = font.glyph_id(ch).with_scale_and_position(
-                scale,
-                point((col * cell_w) as f32, row as f32 * cell_h as f32 + ascent),
-            );
+            // Clip to the cell so overshooting glyphs (e.g. █ block elements)
+            // cannot bleed color into neighboring cells.
+            let (cx0, cy0) = ((col * cell_w) as i64, (row * cell_h) as i64);
+            let (cx1, cy1) = (cx0 + cell_w as i64, cy0 + cell_h as i64);
+            let glyph =
+                glyph_id.with_scale_and_position(scale, point(cx0 as f32, cy0 as f32 + ascent));
             if let Some(outline) = font.outline_glyph(glyph) {
                 let bounds = outline.px_bounds();
                 outline.draw(|gx, gy, coverage| {
                     let x = bounds.min.x as i64 + gx as i64;
                     let y = bounds.min.y as i64 + gy as i64;
-                    if x < 0 || y < 0 || x >= out_w as i64 || y >= out_h as i64 {
+                    if x < cx0
+                        || y < cy0
+                        || x >= cx1.min(out_w as i64)
+                        || y >= cy1.min(out_h as i64)
+                    {
                         return;
                     }
                     let pixel = img.get_pixel_mut(x as u32, y as u32);
@@ -89,8 +131,10 @@ pub fn paint_png(
 }
 
 /// Value-normalize a cell color: keep the hue, push the brightest channel
-/// toward full intensity. Glyph density already encodes luminance, so without
-/// this boost colored output ends up muddy (ink covers only part of a cell).
+/// toward full intensity. On black backgrounds glyph density already encodes
+/// luminance, so without this boost colored output ends up muddy (ink covers
+/// only part of a cell). Never applied on white backgrounds, where it would
+/// wash dark tones into invisibility.
 fn brighten(color: [u8; 3]) -> [u8; 3] {
     let max = color.into_iter().max().unwrap_or(0);
     if max == 0 {
@@ -107,17 +151,22 @@ mod tests {
     use crate::engine::{convert, Options};
     use image::RgbImage;
 
-    #[test]
-    fn paints_expected_dimensions_and_ink() {
-        let src = RgbImage::from_pixel(64, 64, image::Rgb([0, 0, 0]));
-        let grid = convert(
-            &src,
+    fn grid_of(src: &RgbImage, width: u32, invert: bool) -> AsciiGrid {
+        convert(
+            src,
             &Options {
-                width: 8,
+                width,
+                invert,
                 ..Options::default()
             },
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn paints_expected_dimensions_and_ink() {
+        let src = RgbImage::from_pixel(64, 64, image::Rgb([0, 0, 0]));
+        let grid = grid_of(&src, 8, false);
         let img = paint_png(&grid, Background::Black, false, 16.0).unwrap();
         assert_eq!(img.width() % grid.cols, 0);
         assert_eq!(img.height() % grid.rows, 0);
@@ -128,15 +177,64 @@ mod tests {
     #[test]
     fn white_source_paints_empty_canvas() {
         let src = RgbImage::from_pixel(64, 64, image::Rgb([255, 255, 255]));
-        let grid = convert(
-            &src,
-            &Options {
-                width: 8,
-                ..Options::default()
-            },
-        )
-        .unwrap();
+        let grid = grid_of(&src, 8, false);
         let img = paint_png(&grid, Background::Black, false, 16.0).unwrap();
         assert!(img.pixels().all(|p| p.0 == [0, 0, 0]));
+    }
+
+    #[test]
+    fn colored_on_white_keeps_dark_ink_dark() {
+        // Regression: brighten() must not apply on white backgrounds, or dark
+        // grays become near-invisible pastels.
+        let src = RgbImage::from_pixel(64, 64, image::Rgb([20, 20, 20]));
+        let grid = grid_of(&src, 8, false);
+        let img = paint_png(&grid, Background::White, true, 16.0).unwrap();
+        let darkest = img.pixels().map(|p| p.0[0]).min().unwrap();
+        assert!(darkest <= 30, "dark source ink washed out: {darkest}");
+    }
+
+    #[test]
+    fn rejects_invalid_font_px() {
+        let src = RgbImage::from_pixel(8, 8, image::Rgb([0, 0, 0]));
+        let grid = grid_of(&src, 4, false);
+        for bad in [0.0, -5.0, f32::NAN, 4e7] {
+            assert!(paint_png(&grid, Background::Black, false, bad).is_err());
+        }
+    }
+
+    #[test]
+    fn missing_glyphs_paint_blank_not_tofu() {
+        let src = RgbImage::from_pixel(64, 64, image::Rgb([0, 0, 0]));
+        let opts = Options {
+            width: 8,
+            charset: vec!['中', ' '], // not in DejaVu Sans Mono
+            ..Options::default()
+        };
+        let grid = convert(&src, &opts).unwrap();
+        let img = paint_png(&grid, Background::Black, false, 16.0).unwrap();
+        assert!(img.pixels().all(|p| p.0 == [0, 0, 0]));
+    }
+
+    #[test]
+    fn glyphs_stay_inside_their_cells() {
+        // █ overshoots its advance box in DejaVu (outline starts at x = -1
+        // relative to the cell); clipping must keep it out of the neighbor.
+        let grid = AsciiGrid {
+            cols: 2,
+            rows: 1,
+            chars: vec![' ', '█'],
+            colors: vec![[0, 0, 0]; 2],
+        };
+        let img = paint_png(&grid, Background::White, false, 16.0).unwrap();
+        let cell_w = img.width() / 2;
+        // Every pixel of cell 0 (including its rightmost column, where the
+        // neighbor's overshoot would land) must remain pure background.
+        for y in 0..img.height() {
+            for x in 0..cell_w {
+                assert_eq!(img.get_pixel(x, y).0, [255, 255, 255], "bleed at {x},{y}");
+            }
+        }
+        // Sanity: the glyph itself did paint something in cell 1.
+        assert!(img.pixels().any(|p| p.0 != [255, 255, 255]));
     }
 }

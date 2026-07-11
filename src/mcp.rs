@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
+const SUPPORTED_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 
 /// Run the stdio server until stdin closes.
 pub fn serve() -> Result<()> {
@@ -32,11 +33,14 @@ pub fn serve() -> Result<()> {
                 continue;
             }
         };
-        // Notifications (no id) get no response.
+        // Notifications (no id) get no response; messages with an id but no
+        // method are client *responses* — JSON-RPC says ignore, not error.
         let Some(id) = msg.get("id").cloned() else {
             continue;
         };
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        let Some(method) = msg.get("method").and_then(Value::as_str) else {
+            continue;
+        };
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
         let response = handle(id, method, &params);
         writeln!(stdout, "{response}")?;
@@ -48,10 +52,12 @@ pub fn serve() -> Result<()> {
 fn handle(id: Value, method: &str, params: &Value) -> Value {
     match method {
         "initialize" => {
-            // Echo the client's protocol version when provided.
+            // Accept the client's version if we support it; otherwise offer
+            // our latest so the client can downgrade or disconnect.
             let version = params
                 .get("protocolVersion")
                 .and_then(Value::as_str)
+                .filter(|v| SUPPORTED_VERSIONS.contains(v))
                 .unwrap_or(PROTOCOL_VERSION);
             ok_response(
                 id,
@@ -133,7 +139,15 @@ fn run_image_to_ascii(args: &Value) -> Result<String> {
         .get("path")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("missing required argument 'path'"))?;
-    let width = args.get("width").and_then(Value::as_u64).unwrap_or(100) as u32;
+    // Validate rather than silently default: agents must learn when a
+    // parameter was rejected instead of getting wrong-shaped output.
+    let width = match args.get("width") {
+        None => 100,
+        Some(v) => match v.as_u64() {
+            Some(w @ 1..=100_000) => w as u32,
+            _ => anyhow::bail!("'width' must be an integer between 1 and 100000, got {v}"),
+        },
+    };
     let charset_name = args
         .get("charset")
         .and_then(Value::as_str)
@@ -153,7 +167,7 @@ fn run_image_to_ascii(args: &Value) -> Result<String> {
         },
     )?;
     Ok(if as_json {
-        render::to_json(&grid, &ramp, true)
+        render::to_json(&grid, &render::effective_ramp(&ramp, invert), true)
     } else {
         render::to_text(&grid)
     })

@@ -8,7 +8,7 @@ Rust contribution.
 ```bash
 git clone https://github.com/Liohtml/ASCII-World
 cd ASCII-World
-cargo test            # 23 tests, runs in seconds
+cargo test            # full suite, runs in seconds
 cargo run -- txt tests/fixtures/input.jpg --width 100
 ```
 
