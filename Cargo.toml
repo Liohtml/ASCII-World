@@ -1,0 +1,27 @@
+[package]
+name = "ascii-world"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lionel Machire", "Viet Nguyen (original Python implementation)"]
+description = "Blazing-fast image-to-ASCII engine built for agent workflows: CLI, JSON output, and a built-in MCP server."
+repository = "https://github.com/Liohtml/ASCII-World"
+license = "MIT"
+keywords = ["ascii", "ascii-art", "cli", "mcp", "agents"]
+categories = ["command-line-utilities", "multimedia::images"]
+
+[dependencies]
+anyhow = "1"
+ab_glyph = "0.2"
+clap = { version = "4", features = ["derive"] }
+image = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[[bin]]
+name = "ascii-world"
+path = "src/main.rs"

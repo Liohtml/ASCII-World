@@ -1,6 +1,7 @@
 MIT License
 
-Copyright (c) 2018 Viet Nguyen
+Copyright (c) 2018 Viet Nguyen (original Python implementation)
+Copyright (c) 2026 ASCII World contributors (Rust rewrite)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
