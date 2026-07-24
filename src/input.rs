@@ -36,13 +36,17 @@ pub fn read_bytes(input: &str) -> Result<Vec<u8>> {
 /// Sniffed rather than trusted to the extension, because `-` (stdin) has no
 /// extension and neither do a lot of downloaded files.
 pub fn is_svg(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(1024)];
-    let text = String::from_utf8_lossy(head);
-    let text = text.trim_start_matches('\u{feff}').trim_start();
-    text.starts_with("<svg")
-        || (text.starts_with("<?xml") || text.starts_with("<!--")) && {
-            String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]).contains("<svg")
-        }
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]);
+    let head = head.trim_start_matches('\u{feff}').trim_start();
+    if head.starts_with("<svg") {
+        return true;
+    }
+    // Exported SVGs usually open with an XML declaration, a doctype or a
+    // license comment before the root element.
+    let preamble = ["<?xml", "<!--", "<!DOCTYPE"]
+        .into_iter()
+        .any(|p| head.starts_with(p));
+    preamble && String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]).contains("<svg")
 }
 
 /// Does this look like a GIF (possibly animated)?

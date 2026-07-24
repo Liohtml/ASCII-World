@@ -8,7 +8,7 @@
 use crate::anim;
 use crate::engine::{self, Options};
 use crate::font::FontStack;
-use crate::paint::{self, Bounds, PaintOptions};
+use crate::paint::{self, PaintOptions};
 use anyhow::{bail, Context, Result};
 use image::RgbaImage;
 use std::io::{Read, Write};
@@ -186,9 +186,10 @@ fn spawn_encoder(output: &Path, w: u32, h: u32, fps: f64, opts: &VideoOptions) -
 /// Convert a video file frame by frame.
 ///
 /// `engine_opts` and `paint_opts` are exactly what the `img` path uses, so a
-/// still and a frame of video are rendered identically. Cropping, if enabled,
-/// is measured once on the first frame and reused — every frame of a video
-/// has to be the same size.
+/// still and a frame of video are rendered identically — except for cropping,
+/// which is ignored here. Frames are encoded as they are decoded, so the box
+/// that fits *every* frame is not knowable in time, and cropping to the first
+/// frame's would guillotine anything that moves into view later.
 pub fn convert_video(
     input: &Path,
     output: &Path,
@@ -216,7 +217,6 @@ pub fn convert_video(
 
     let mut raw = vec![0u8; spec.width as usize * spec.height as usize * 4];
     let mut encoder: Option<(Child, ChildStdin)> = None;
-    let mut bounds: Option<Bounds> = None;
     let mut stats = Stats {
         frames: 0,
         width: 0,
@@ -227,20 +227,7 @@ pub fn convert_video(
         let source = RgbaImage::from_raw(spec.width, spec.height, raw.clone())
             .expect("buffer is exactly one frame");
         let grid = engine::convert(&source, engine_opts)?;
-        let mut canvas = paint::paint_canvas(&grid, fonts, paint_opts)?;
-
-        if paint_opts.crop {
-            let bounds = *bounds.get_or_insert_with(|| {
-                paint::content_bounds(&canvas, paint_opts.background).unwrap_or(Bounds {
-                    x0: 0,
-                    y0: 0,
-                    x1: canvas.width(),
-                    y1: canvas.height(),
-                })
-            });
-            canvas = paint::crop_to(&canvas, bounds);
-        }
-        canvas = anim::to_even(&canvas);
+        let mut canvas = anim::to_even(&paint::paint_canvas(&grid, fonts, paint_opts)?);
         if video_opts.overlay > 0.0 {
             overlay_source(&mut canvas, &source, video_opts.overlay);
         }

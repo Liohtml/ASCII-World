@@ -345,6 +345,77 @@ fn animated_gif_round_trips_through_the_cli() {
 }
 
 #[test]
+fn animation_cropping_keeps_every_frame_whole() {
+    // Frame 1 is blank, frame 2 draws top-left, frame 3 draws bottom-right.
+    // Cropping to the first frame that has content would guillotine the
+    // other corner, and a blank first frame would leave frames of different
+    // sizes — which is not encodable at all.
+    let blank = RgbaImage::from_pixel(80, 80, Rgba([255, 255, 255, 255]));
+    let mut top_left = blank.clone();
+    let mut bottom_right = blank.clone();
+    for y in 0..20 {
+        for x in 0..20 {
+            top_left.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+            bottom_right.put_pixel(x + 60, y + 60, Rgba([0, 0, 0, 255]));
+        }
+    }
+    let src = tmp("moving.gif");
+    anim::write_gif(
+        &src,
+        &[blank, top_left, bottom_right]
+            .into_iter()
+            .map(|image| Frame {
+                image,
+                delay_ms: 50,
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+
+    let out = tmp("moving_ascii.gif");
+    run(cli().args([
+        "img",
+        src.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--width",
+        "40",
+        "--bg",
+        "white",
+    ]));
+
+    let decoded = input::decode_frames(&std::fs::read(&out).unwrap(), 256).unwrap();
+    assert_eq!(decoded.len(), 3);
+    let size = decoded[0].image.dimensions();
+    assert!(
+        decoded.iter().all(|f| f.image.dimensions() == size),
+        "frames disagree on size: {:?}",
+        decoded
+            .iter()
+            .map(|f| f.image.dimensions())
+            .collect::<Vec<_>>()
+    );
+
+    // Both corners survived the crop, each in its own frame and its own half.
+    let ink = |f: &Frame, right: bool, bottom: bool| {
+        let (w, h) = f.image.dimensions();
+        let xs = if right { w / 2..w } else { 0..w / 2 };
+        let ys = if bottom { h / 2..h } else { 0..h / 2 };
+        ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+            .filter(|&(x, y)| f.image.get_pixel(x, y).0[0] < 128)
+            .count()
+    };
+    assert!(
+        ink(&decoded[1], false, false) > 0,
+        "top-left frame lost its ink"
+    );
+    assert!(
+        ink(&decoded[2], true, true) > 0,
+        "bottom-right frame was cropped away"
+    );
+}
+
+#[test]
 fn cropping_trims_the_canvas_and_can_be_turned_off() {
     // Content in the middle only, so there is something to trim.
     let mut src = RgbaImage::from_pixel(80, 80, Rgba([255, 255, 255, 255]));

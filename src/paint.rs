@@ -76,6 +76,20 @@ impl Bounds {
     pub fn height(&self) -> u32 {
         self.y1 - self.y0
     }
+
+    /// The smallest box containing both.
+    ///
+    /// Animations crop every frame to the union of all of them: cropping to
+    /// the first frame's box would guillotine anything that moves into view
+    /// later, and frames of differing size are not encodable at all.
+    pub fn union(self, other: Bounds) -> Bounds {
+        Bounds {
+            x0: self.x0.min(other.x0),
+            y0: self.y0.min(other.y0),
+            x1: self.x1.max(other.x1),
+            y1: self.y1.max(other.y1),
+        }
+    }
 }
 
 /// How to paint a grid.
@@ -354,10 +368,17 @@ fn brighten(color: [u8; 3]) -> [u8; 3] {
     if max == 0 {
         return color;
     }
-    // Blend 70% toward full value normalization.
-    let gain = 1.0 + 0.7 * (255.0 / max as f32 - 1.0);
+    // Blend 70% toward full value normalization, but only so far: a cell
+    // averaging #0a0b07 is *black with sensor noise*, and normalizing it
+    // would need 16x gain, turning that noise into a confident yellow-green.
+    // The cap only engages below max ≈ 48 (19% brightness), so everything a
+    // viewer would call a color is boosted exactly as before.
+    let gain = (1.0 + 0.7 * (255.0 / max as f32 - 1.0)).min(MAX_BRIGHTEN_GAIN);
     color.map(|c| (c as f32 * gain).min(255.0) as u8)
 }
+
+/// Ceiling on [`brighten`]'s gain — see the comment there.
+const MAX_BRIGHTEN_GAIN: f32 = 4.0;
 
 #[cfg(test)]
 mod tests {
@@ -416,6 +437,23 @@ mod tests {
         let grid = grid_of(&flat(255), 8, false);
         let img = paint_png(&grid, fonts(), &opts(Background::Black)).unwrap();
         assert!(img.pixels().all(|p| p.0 == [0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn brighten_boosts_colors_without_inventing_them() {
+        // A saturated mid-tone keeps its hue and gains value.
+        let boosted = brighten([200, 120, 50]);
+        assert!(boosted[0] > 200 && boosted[0] > boosted[1] && boosted[1] > boosted[2]);
+        // Near-black stays near-black: normalizing #0a0b07 to full value would
+        // need 16x gain and paint noise as a confident color.
+        let noise = brighten([10, 11, 7]);
+        assert!(
+            noise.iter().all(|&c| c < 64),
+            "near-black amplified to {noise:?}"
+        );
+        assert_eq!(brighten([0, 0, 0]), [0, 0, 0]);
+        // Unchanged for anything a viewer would call a color.
+        assert_eq!(brighten([36, 60, 64]), [111, 185, 197]);
     }
 
     #[test]

@@ -92,14 +92,18 @@ impl FontStack {
 
     /// Resolve every character once — paint loops call this instead of
     /// walking the stack per cell.
+    ///
+    /// A grid holds millions of cells but only a charset's worth of distinct
+    /// characters, so deduplicate before touching a font's cmap.
     pub fn locate_all<'a>(
         &self,
         chars: impl IntoIterator<Item = &'a char>,
     ) -> HashMap<char, Located> {
-        chars
+        let distinct: std::collections::BTreeSet<char> =
+            chars.into_iter().copied().filter(|&c| c != ' ').collect();
+        distinct
             .into_iter()
-            .filter(|&&c| c != ' ')
-            .filter_map(|&c| self.locate(c).map(|l| (c, l)))
+            .filter_map(|c| self.locate(c).map(|l| (c, l)))
             .collect()
     }
 

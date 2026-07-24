@@ -58,7 +58,9 @@ enum Command {
         #[command(flatten)]
         render: RenderArgs,
     },
-    /// Convert a video to an ASCII-art video (needs ffmpeg on PATH)
+    /// Convert a video to an ASCII-art video (needs ffmpeg on PATH).
+    /// Frames are encoded as they are decoded, so --no-crop is implied:
+    /// the box that fits every frame is not knowable while streaming.
     Video {
         /// Input video path
         input: PathBuf,
@@ -298,21 +300,23 @@ fn run_img(
         return Ok(());
     }
 
-    // Animated: every frame must land on the same canvas, so the crop box is
-    // measured once and reused.
+    // Animated: paint every frame first, then crop them all to one box — the
+    // union of what each frame drew. Cropping to frame 1 alone would cut off
+    // anything that moves into view later, and frames of differing size are
+    // not encodable at all.
     let mut painted: Vec<Frame> = Vec::with_capacity(frames.len());
-    let mut bounds = None;
+    let mut bounds: Option<paint::Bounds> = None;
     let mut cols = 0;
     for (i, frame) in frames.iter().enumerate() {
         let grid = engine::convert(&frame.image, &r.engine)?;
         cols = grid.cols;
-        let mut canvas = paint::paint_canvas(&grid, &r.fonts, &r.paint)?;
+        let canvas = paint::paint_canvas(&grid, &r.fonts, &r.paint)?;
         if r.paint.crop {
-            if bounds.is_none() {
-                bounds = paint::content_bounds(&canvas, r.paint.background);
-            }
-            if let Some(b) = bounds {
-                canvas = paint::crop_to(&canvas, b);
+            if let Some(drawn) = paint::content_bounds(&canvas, r.paint.background) {
+                bounds = Some(match bounds {
+                    Some(so_far) => so_far.union(drawn),
+                    None => drawn,
+                });
             }
         }
         painted.push(Frame {
@@ -322,6 +326,11 @@ fn run_img(
         eprint!("\rframe {}/{}", i + 1, frames.len());
     }
     eprintln!();
+    if let Some(bounds) = bounds {
+        for frame in &mut painted {
+            frame.image = paint::crop_to(&frame.image, bounds);
+        }
+    }
     note_clamped_width(cols, width);
     anim::write_gif(&output, &painted)?;
     let (w, h) = painted[0].image.dimensions();
