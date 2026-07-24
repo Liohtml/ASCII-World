@@ -22,6 +22,32 @@ jobs:
       - run: cargo test --all-targets
       - run: cargo run -- txt tests/fixtures/input.jpg --width 80
 
+  features:
+    name: feature combinations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Every optional feature has to stay droppable: no rayon (what the wasm
+      # build does), no CJK font, no SVG rasterizer.
+      - run: cargo test --no-default-features --features cli
+      - run: cargo test --no-default-features --features cli,cjk,svg
+      - run: cargo build --no-default-features --features cli,parallel
+
+  wasm:
+    name: wasm32 build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          cargo build --release --target wasm32-unknown-unknown \
+            --no-default-features --features wasm,cjk,svg
+
   lint:
     name: fmt + clippy
     runs-on: ubuntu-latest

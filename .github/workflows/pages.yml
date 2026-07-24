@@ -1,0 +1,63 @@
+name: Deploy web demo
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "src/**"
+      - "web/**"
+      - "assets/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer commit supersedes an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # The CLI has to match the wasm-bindgen crate exactly, so take the
+      # version straight from the lockfile instead of pinning it twice.
+      - name: Install wasm-bindgen-cli
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[";]/,"",$3); print $3; exit}' Cargo.lock)
+          echo "wasm-bindgen $version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - name: Build the engine for wasm32
+        run: |
+          cargo build --release --target wasm32-unknown-unknown \
+            --no-default-features --features wasm,cjk,svg
+          wasm-bindgen target/wasm32-unknown-unknown/release/ascii_world.wasm \
+            --out-dir web/pkg --target web
+          ls -lh web/pkg
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

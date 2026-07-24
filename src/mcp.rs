@@ -7,7 +7,7 @@
 //! Deliberately dependency-free: the protocol surface we need is small
 //! enough that hand-rolled JSON-RPC keeps the binary lean and auditable.
 
-use crate::{charset, engine, render};
+use crate::{charset, engine, input, render};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -81,7 +81,8 @@ fn handle(id: Value, method: &str, params: &Value) -> Value {
 fn tool_schema() -> Value {
     json!({
         "name": "image_to_ascii",
-        "description": "Convert an image file (PNG/JPEG/GIF/WebP/BMP) to ASCII art. \
+        "description": "Convert an image file (PNG/JPEG/GIF/WebP/BMP/SVG) to ASCII art. \
+            Transparent areas render as blank, so logos stay cutouts. \
             Returns the ASCII text; optionally includes per-cell colors as JSON.",
         "inputSchema": {
             "type": "object",
@@ -98,13 +99,20 @@ fn tool_schema() -> Value {
                 "charset": {
                     "type": "string",
                     "description": format!(
-                        "Character set: one of {NAMED:?} or 'custom:<chars dark→light>' (default 'complex')",
+                        "Character set: one of {NAMED:?} or 'custom:<chars dark→light>' (default 'complex'). \
+                         'braille' samples a 2x4 dot grid per cell for ~8x the detail.",
                         NAMED = charset::NAMED
                     )
                 },
                 "invert": {
                     "type": "boolean",
                     "description": "Invert brightness mapping (for light backgrounds)"
+                },
+                "alpha_threshold": {
+                    "type": "integer",
+                    "description": "Cells whose mean alpha is below this render blank (0-255, default 64)",
+                    "minimum": 0,
+                    "maximum": 255
                 },
                 "json": {
                     "type": "boolean",
@@ -154,20 +162,32 @@ fn run_image_to_ascii(args: &Value) -> Result<String> {
         .unwrap_or("complex");
     let invert = args.get("invert").and_then(Value::as_bool).unwrap_or(false);
     let as_json = args.get("json").and_then(Value::as_bool).unwrap_or(false);
+    let alpha_threshold = match args.get("alpha_threshold") {
+        None => engine::DEFAULT_ALPHA_THRESHOLD,
+        Some(v) => match v.as_u64() {
+            Some(a @ 0..=255) => a as u8,
+            _ => anyhow::bail!("'alpha_threshold' must be an integer between 0 and 255, got {v}"),
+        },
+    };
 
-    let ramp = charset::resolve(charset_name)?;
-    let img = image::open(path)?.to_rgb8();
+    let charset = charset::resolve(charset_name)?;
+    let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("failed to open '{path}': {e}"))?;
+    let img = input::decode_still(&bytes, input::svg_target_px(width))?;
     let grid = engine::convert(
         &img,
         &engine::Options {
             width,
-            charset: ramp.clone(),
+            charset: charset.clone(),
             invert,
             aspect: 2.0,
+            alpha_threshold,
+            // Agents paste this into chat or a terminal; match the txt path.
+            matte: Some(if invert { [0, 0, 0] } else { [255, 255, 255] }),
+            braille_threshold: None,
         },
     )?;
     Ok(if as_json {
-        render::to_json(&grid, &render::effective_ramp(&ramp, invert), true)
+        render::to_json(&grid, &charset, invert, true)
     } else {
         render::to_text(&grid)
     })

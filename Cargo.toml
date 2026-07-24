@@ -1,6 +1,6 @@
 [package]
 name = "ascii-world"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Lionel Machire", "Viet Nguyen (original Python implementation)"]
 description = "Blazing-fast image-to-ASCII engine built for agent workflows: CLI, JSON output, and a built-in MCP server."
@@ -8,11 +8,25 @@ repository = "https://github.com/Liohtml/ASCII-World"
 license = "MIT"
 keywords = ["ascii", "ascii-art", "cli", "mcp", "agents"]
 categories = ["command-line-utilities", "multimedia::images"]
+exclude = ["docs/images/*", "data/*", "web/*"]
+
+[features]
+default = ["cli", "parallel", "cjk", "svg"]
+# The command-line binary. Off for wasm32, which has no argv or stdio.
+cli = ["dep:clap"]
+# Sample cells across all cores. Off for wasm32, which has no threads.
+parallel = ["dep:rayon", "image/rayon"]
+# Embed the Noto Sans Mono CJK subset for the chinese/korean/japanese sets.
+cjk = []
+# Accept SVG input by rasterizing it internally.
+svg = ["dep:resvg"]
+# Build the browser bindings (see web/ and `wasm-pack`-style workflows).
+wasm = ["dep:wasm-bindgen"]
 
 [dependencies]
 anyhow = "1"
 ab_glyph = "0.2"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 # Only the codecs we advertise — keeps the binary lean and clean builds fast.
 image = { version = "0.25", default-features = false, features = [
     "png",
@@ -20,16 +34,25 @@ image = { version = "0.25", default-features = false, features = [
     "gif",
     "webp",
     "bmp",
-    "rayon",
 ] }
+rayon = { version = "1", optional = true }
+# Vector input. default-features = false drops font loading (~40 crates); SVG
+# text has to be converted to paths, which every export tool can do.
+resvg = { version = "0.45", default-features = false, optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+wasm-bindgen = { version = "0.2.100", optional = true }
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
 
+[lib]
+# cdylib for the wasm32 build, rlib for the CLI and downstream crates.
+crate-type = ["cdylib", "rlib"]
+
 [[bin]]
 name = "ascii-world"
 path = "src/main.rs"
+required-features = ["cli"]

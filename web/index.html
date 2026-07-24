@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASCII World — image to ASCII, in your browser</title>
+<meta name="description" content="Drop an image, get ASCII art. The ascii-world Rust engine compiled to WebAssembly — nothing is uploaded.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13' font-family='monospace'>%23</text></svg>">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --panel: #161b22;
+    --line: #30363d;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header, main, footer { max-width: 1100px; margin: 0 auto; padding: 0 1rem; }
+  header { padding-top: 2.5rem; padding-bottom: 1rem; }
+  h1 { margin: 0 0 .25rem; font-size: 1.6rem; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 1.5rem; }
+  .sub code { color: var(--fg); }
+
+  #drop {
+    border: 2px dashed var(--line);
+    border-radius: 12px;
+    padding: 2.5rem 1rem;
+    text-align: center;
+    color: var(--muted);
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop:hover, #drop.over { border-color: var(--accent); background: #161b22; }
+  #drop strong { color: var(--fg); }
+
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: .9rem 1.2rem;
+    margin: 1.25rem 0;
+    padding: 1rem;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+  label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: .35rem; }
+  select, input[type=range] { width: 100%; }
+  select {
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: .35rem;
+  }
+  .check { display: flex; align-items: center; gap: .5rem; padding-top: 1.35rem; }
+  .check label { margin: 0; color: var(--fg); }
+
+  #out {
+    background: #000;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 1rem;
+    overflow: auto;
+    font-family: "DejaVu Sans Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 7px;
+    line-height: 1;
+    white-space: pre;
+    min-height: 180px;
+  }
+  #out.light { background: #fff; color: #000; }
+  .actions { display: flex; gap: .6rem; margin: 1rem 0 2.5rem; flex-wrap: wrap; }
+  button {
+    background: var(--panel); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: .5rem .9rem; cursor: pointer; font: inherit;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { color: var(--muted); font-size: .85rem; align-self: center; }
+  footer { color: var(--muted); font-size: .85rem; padding-bottom: 3rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>ASCII World</h1>
+  <p class="sub">
+    Drop an image — PNG, JPEG, GIF, WebP, BMP or SVG — and it becomes ASCII art.
+    The <code>ascii-world</code> Rust engine, compiled to WebAssembly:
+    the file never leaves your browser.
+  </p>
+</header>
+
+<main>
+  <div id="drop" tabindex="0" role="button" aria-label="Choose or drop an image">
+    <strong>Drop an image here</strong><br>or click to choose one
+    <input id="file" type="file" accept="image/*,.svg" hidden>
+  </div>
+
+  <div class="controls">
+    <div>
+      <label for="width">Width — <span id="widthValue">100</span> characters</label>
+      <input id="width" type="range" min="20" max="400" step="10" value="100">
+    </div>
+    <div>
+      <label for="charset">Character set</label>
+      <select id="charset"></select>
+    </div>
+    <div class="check">
+      <input id="color" type="checkbox" checked>
+      <label for="color">Color</label>
+    </div>
+    <div class="check">
+      <input id="invert" type="checkbox">
+      <label for="invert">Invert (light background)</label>
+    </div>
+  </div>
+
+  <div id="out">Waiting for an image…</div>
+
+  <div class="actions">
+    <button id="copy" disabled>Copy text</button>
+    <button id="download" disabled>Download .txt</button>
+    <span id="status"></span>
+  </div>
+</main>
+
+<footer>
+  <a href="https://github.com/Liohtml/ASCII-World">Source on GitHub</a> ·
+  MIT · engine v<span id="version">…</span> ·
+  same engine as the CLI and the MCP server
+</footer>
+
+<script type="module">
+import init, { imageToJson, charsetNames, version } from "./pkg/ascii_world.js";
+
+const $ = (id) => document.getElementById(id);
+const drop = $("drop"), file = $("file"), out = $("out"), status = $("status");
+let bytes = null, plain = "";
+
+await init();
+$("version").textContent = version();
+for (const name of charsetNames()) {
+  const option = document.createElement("option");
+  option.value = option.textContent = name;
+  if (name === "complex") option.selected = true;
+  $("charset").append(option);
+}
+
+const escapeHtml = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+// Mirrors paint::brighten in the Rust renderer: on a dark canvas a glyph inks
+// only part of its cell, so raw cell colors read as mud. Keep the hue, push
+// the brightest channel most of the way to full value. Skipped on light
+// backgrounds, where it would wash dark tones out.
+function brighten(hex) {
+  const rgb = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const max = Math.max(...rgb);
+  if (max === 0) return hex;
+  const gain = 1 + 0.7 * (255 / max - 1);
+  return "#" + rgb.map((c) => Math.min(255, Math.round(c * gain)).toString(16).padStart(2, "0")).join("");
+}
+
+function render() {
+  if (!bytes) return;
+  const width = +$("width").value;
+  const invert = $("invert").checked;
+  const colored = $("color").checked;
+  const started = performance.now();
+  let doc;
+  try {
+    doc = JSON.parse(imageToJson(bytes, width, $("charset").value, invert, colored));
+  } catch (e) {
+    out.textContent = String(e.message ?? e);
+    status.textContent = "";
+    return;
+  }
+
+  plain = doc.lines.join("\n");
+  out.classList.toggle("light", invert);
+  if (colored && doc.colors) {
+    // One span per run of identical color keeps huge grids manageable.
+    let html = "";
+    doc.lines.forEach((line, row) => {
+      let run = "", color = null;
+      [...line].forEach((ch, col) => {
+        const next = invert ? doc.colors[row][col] : brighten(doc.colors[row][col]);
+        if (next !== color) {
+          if (run) html += `<span style="color:${color}">${escapeHtml(run)}</span>`;
+          run = "";
+          color = next;
+        }
+        run += ch;
+      });
+      if (run) html += `<span style="color:${color}">${escapeHtml(run)}</span>`;
+      html += "\n";
+    });
+    out.innerHTML = html;
+  } else {
+    out.textContent = plain;
+  }
+
+  const ms = Math.round(performance.now() - started);
+  status.textContent = `${doc.cols}×${doc.rows} cells · ${doc.mode} · ${ms} ms`;
+  $("copy").disabled = $("download").disabled = false;
+}
+
+async function load(f) {
+  if (!f) return;
+  bytes = new Uint8Array(await f.arrayBuffer());
+  drop.querySelector("strong").textContent = f.name;
+  render();
+}
+
+drop.addEventListener("click", () => file.click());
+drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") file.click(); });
+file.addEventListener("change", () => load(file.files[0]));
+for (const type of ["dragenter", "dragover"]) {
+  drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.add("over"); });
+}
+for (const type of ["dragleave", "drop"]) {
+  drop.addEventListener(type, () => drop.classList.remove("over"));
+}
+drop.addEventListener("drop", (e) => { e.preventDefault(); load(e.dataTransfer.files[0]); });
+
+$("width").addEventListener("input", () => { $("widthValue").textContent = $("width").value; render(); });
+for (const id of ["charset", "invert", "color"]) $(id).addEventListener("change", render);
+
+$("copy").addEventListener("click", async () => {
+  await navigator.clipboard.writeText(plain);
+  status.textContent = "copied";
+});
+$("download").addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([plain], { type: "text/plain" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: "ascii.txt" });
+  a.click();
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
